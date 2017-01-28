@@ -1,0 +1,117 @@
+#!/usr/bin/php
+<?php
+$options = getopt("", array("video:", "audio:", "vcutin:", "vcutout:", "vduration:", "audio-set:", "audio-delay:", "audio-seek:", "volume-added:", "volume-orig:", "help"));
+
+if (isset($options['help']) || !isset($options['video']) || !isset($options['audio'])) {
+    print "
+    --video         Input video with audio included
+    --audio         The new audio that should replace one channel
+    --vcutin        The in-point of the video (in seconds or hh:mm:ss)
+
+    --vcutout       The out-point of the video (hh:mm:ss)
+    OR
+    --vduration     The length of the input video (in seconds or hh:mm:ss)
+
+    --audio-delay   The delay of the added audio relative to the video (hh:mm:ss or in millisecs, can not be 0)
+    --audio-seek    The in-point of the added audio (in seconds or hh:mm:ss)
+
+    --volume-orig   Original video's volume (float: 0: mute, <1 attenuate, ==1: original,  >1: louder)
+    --volume-added  Added audio's volume (float: 0: mute, <1 attenuate, ==1: original,  >1: louder)
+
+    --help I never understood why they write --help into --help.
+    
+    
+                    
+                       <---------------+ vcutout +-------------->+
+                                                                 |
+                                             <---+ vduration +-->+
+                                                                 |
+                       +---------------------+-------------------------------+
+                                             |                   |           |   ^
+                                             |                   |           |   |
+                video  <-----+ vcutin +----->+                   |           |   | volume-orig
+                                             |                   |           |   |
+                                             |                   |           |   +
+                       +---------------------+-------------------------------+
+                                                                 |
+                                                                 |
+                               +-------------------+-------------------------+
+                                                   |             |           |   ^
+                       <-------+ audio-delay +---->+             |           |   |
+                audio                              |             |           |   | volume-added
+                               <--+ audio-seek +-->+             |           |   |
+                                                   |             |           |   +
+                               +-------------------+-------------------------+
+                                                                 |
+                                                                 |
+                                                                 +
+                
+";
+    exit;
+}
+chdir(dirname($options['video']));
+
+
+if (isset($options['audio-delay'])) {
+    if (preg_match_all("#^(?P<h>[0-9]{2}):(?P<m>[0-9]{2}):(?P<s>[0-9]{2})$#", $options['audio-delay'], $matches) !== 0) {
+
+        $options['audio-delay'] = $matches['h'][0] * 3600000 + $matches['m'][0] * 60000 + $matches['s'][0] * 1000;
+    }
+
+}
+
+$audio_delay = isset($options['audio-delay']) ? ",adelay=" . $options['audio-delay'] . "|" . $options['audio-delay'] : ""; //millisec nem nullanak kell lennie..., eltolja hogy hol kezdodjon maga a bejatszas 0.1 millisecet nem vesz eszre senki ez a def.
+$audio_seek = isset($options['audio-seek']) ? $options['audio-seek'] : "0"; // ez a bejatszason belul tolja el
+
+
+$volume_orig = isset($options['volume-orig']) ? $options['volume-orig'] : "1";
+$volume_added = isset($options['volume-added']) ? $options['volume-added'] : "1";
+
+$cmd = array();
+$cmd[] = "time ffmpeg -y";
+$cmd[] = "-ss " . escapeshellarg($audio_seek);
+$cmd[] = "-i " . escapeshellarg($options['audio']);
+$cmd[] = "-i " . escapeshellarg($options['video']);
+
+
+$cmd[] = "-filter_complex \"
+ [0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=${volume_added}${audio_delay}[a1];
+ [1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=${volume_orig}[a2];
+ [a1][a2]amerge,pan=stereo|c0<c0+c1|c1<c2+c3\"";
+
+$cmd[] = ' -c:v copy'; // Video frames just copied
+
+if (isset($options['vcutin'])) {
+    $cmd[] = "-ss " . escapeshellarg($options['vcutin']); // video start seek
+}
+if (isset($options['vcutout'])) {
+    $cmd[] = "-to " . escapeshellarg($options['vcutout']); // video end
+} elseif (isset($options['vduration'])) {
+    $cmd[] = "-t " . escapeshellarg($options['vduration']); // video end duration
+}
+
+
+$output = basename($options['video']);
+$extension = substr($output, strrpos($output, "."));
+$output_woext = substr($output, 0, strrpos($output, "."));
+
+$output_final = $output_woext . "_muxed" . $extension;
+$cmd[] = escapeshellarg($output_final);
+
+
+$cmd = implode(" \\\n ", $cmd);
+
+printf("Command: \n----------------------------\n%s\n----------------------------\n\n", $cmd);
+
+passthru($cmd);
+
+/**
+ * Store the original command
+ */
+$orig_cmd = array();
+$orig_cmd[] = basename($argv[0]);
+foreach ($options as $k => $v) {
+    $orig_cmd[] = "--$k=" . escapeshellarg($v);
+}
+file_put_contents($output_final . ".cmd", implode(" ", $orig_cmd) . "\n", FILE_APPEND);
+
